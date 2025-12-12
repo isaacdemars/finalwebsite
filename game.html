@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Endless Skier — Run the Slope</title>
+<style>
+  :root{
+    --bg:#0b2340;
+    --snow:#eef6ff;
+    --accent:#ff3bd6;
+  }
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+  body{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background: linear-gradient(180deg, #091827 0%, #0b2340 50%, #06304a 100%);
+    color:var(--snow);
+  }
+
+  .wrap{
+    width: 960px;
+    max-width: calc(100vw - 20px);
+    margin: 20px;
+    text-align:center;
+  }
+
+  canvas{
+    width:100%;
+    height:600px;
+    display:block;
+    border-radius:12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    background: linear-gradient(180deg,#e8f6ff 0%, #f5fcff 30%);
+    touch-action:none;
+  }
+
+  .hud{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin:8px 0 12px 0;
+    gap:12px;
+  }
+  .panel{
+    background: rgba(10,20,30,0.55);
+    padding:8px 14px;
+    border-radius:10px;
+    font-weight:600;
+    color:var(--snow);
+    letter-spacing:0.6px;
+  }
+
+  .center-controls{
+    margin-top:12px;
+    display:flex;
+    justify-content:center;
+    gap:10px;
+  }
+
+  button{
+    background:var(--accent);
+    color:#041223;
+    border: none;
+    padding:8px 14px;
+    border-radius:8px;
+    font-weight:700;
+    cursor:pointer;
+  }
+  button.secondary{background:transparent;color:var(--snow);border:1px solid rgba(255,255,255,0.08);}
+  small{opacity:0.85;display:block;margin-top:6px;color:#dff3ff;}
+  .notice{opacity:0.9;margin-top:10px;color:#e6f8ff;}
+  @media (max-width:560px){
+    canvas{height:420px;}
+    .wrap{max-width:100%}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 style="margin:0 0 8px 0">Endless Skier</h1>
+    <div class="hud">
+      <div class="panel">Distance: <span id="score">0</span> m</div>
+      <div class="panel">Speed: <span id="speed">0</span></div>
+      <div class="panel">High: <span id="high">0</span> m</div>
+    </div>
+
+    <canvas id="game"></canvas>
+
+    <div class="center-controls">
+      <button id="startBtn">Start Game</button>
+      <button id="muteBtn" class="secondary">Mute</button>
+      <button id="resetHigh" class="secondary">Reset High Score</button>
+    </div>
+
+    <div class="notice">
+      Controls: ← → or A / D. Tap left/right screen on mobile. Avoid trees/rocks and go as far as you can!
+    </div>
+  </div>
+
+<script>
+/*
+  Endless Skier
+  - Single-file small game
+  - Arrow keys / A D / touch controls
+  - Avoid obstacles, score is distance in meters
+*/
+
+// Canvas setup (internal resolution higher for crispness)
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas(){
+  const ratio = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  canvas.width = Math.round(w * ratio);
+  canvas.height = Math.round(h * ratio);
+  ctx.setTransform(ratio,0,0,ratio,0,0); // scale drawing to css pixels
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// HUD
+const scoreEl = document.getElementById('score');
+const speedEl = document.getElementById('speed');
+const highEl = document.getElementById('high');
+
+const startBtn = document.getElementById('startBtn');
+const muteBtn = document.getElementById('muteBtn');
+const resetHigh = document.getElementById('resetHigh');
+
+let audioEnabled = true;
+
+// Simple sounds (WebAudio) — optional beep / crash
+const audioCtx = (window.AudioContext || window.webkitAudioContext) ? new (window.AudioContext || window.webkitAudioContext)() : null;
+function playTone(freq, dur=0.06, type='sine', vol=0.08){
+  if(!audioEnabled || !audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime + dur);
+}
+
+// Game state
+let game = null;
+const HIGH_KEY = 'endless_skier_high';
+
+function getHigh(){ return Number(localStorage.getItem(HIGH_KEY) || 0); }
+function setHigh(v){ localStorage.setItem(HIGH_KEY, String(Math.floor(v))); highEl.textContent = Math.floor(v); }
+
+highEl.textContent = getHigh();
+
+// Entities and constants
+const SLOPE = {
+  lanePadding: 40, // visual left/right margin
+};
+
+// Utility
+function rnd(a,b){ return Math.random()*(b-a)+a; }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+
+// Game class encapsulating logic
+class Game {
+  constructor(){
+    this.width = canvas.clientWidth;
+    this.height = canvas.clientHeight;
+    this.running = false;
+    this.player = {
+      x: this.width/2,
+      y: this.height - 110,
+      w: 28,
+      h: 42,
+      color: '#0b2340',
+      dir:0, // -1 left, 1 right
+      vx:0
+    };
+    this.obstacles = [];
+    this.scroll = 0; // how far we've gone (meters)
+    this.speed = 220; // pixels per second base (increases)
+    this.baseSpeed = 220;
+    this.maxSpeed = 900;
+    this.spawnTimer = 0;
+    this.spawnRate = 0.9; // seconds between spawns (reduces)
+    this.distance = 0; // meters
+    this.spawnObjects = ['tree','rock','snowman','flag'];
+    this.lastTime = 0;
+    this.touchSide = null;
+    this.scoreMultiplier = 1;
+    this.gameOver = false;
+    this.distanceMeters = 0;
+    this.high = getHigh();
+    this.backgroundOffset = 0;
+  }
+
+  start(){
+    this.running = true;
+    this.obstacles = [];
+    this.scroll = 0;
+    this.distance = 0;
+    this.spawnTimer = 0;
+    this.speed = this.baseSpeed;
+    this.spawnRate = 0.9;
+    this.gameOver = false;
+    this.lastTime = performance.now();
+    this.player.x = this.width/2;
+    this.player.vx = 0;
+    this.player.dir = 0;
+    this.backgroundOffset = 0;
+    if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    requestAnimationFrame(this.frame.bind(this));
+  }
+
+  end(){
+    this.running = false;
+    this.gameOver = true;
+    playTone(120, 0.3, 'sawtooth', 0.14);
+    // update high
+    if(this.distanceMeters > this.high){
+      setHigh(this.distanceMeters);
+      playTone(900,0.12,'sine',0.12);
+    }
+    // show a basic overlay
+    setTimeout(()=>{ // small delay so sound plays
+      const again = confirm('Game Over — distance: ' + Math.floor(this.distanceMeters) + ' m\nPlay again?');
+      if(again) this.start();
+    }, 120);
+  }
+
+  spawnObstacle(){
+    // spawn at random x across slope area
+    const laneLeft = 40;
+    const laneRight = this.width - 40;
+    const x = rnd(laneLeft + 30, laneRight - 30);
+    const typeRoll = Math.random();
+    let rtype = 'tree';
+    if(typeRoll < 0.18) rtype='rock';
+    else if(typeRoll < 0.32) rtype='snowman';
+    else if(typeRoll < 0.45) rtype='flag';
+    else rtype='tree';
+    const size = (rtype === 'rock') ? rnd(18,36) : (rtype === 'snowman') ? rnd(28,42) : (rtype==='flag') ? 14 : rnd(28,54);
+    // obstacles move downward relative to camera (we simulate by moving them downward)
+    this.obstacles.push({
+      x, y: -60, w:size, h:size, type:rtype, hit:false,
+      vx: rnd(-30,30) * 0.02
+    });
+  }
+
+  update(dt){
+    if(this.gameOver) return;
+
+    // accelerate speed gradually
+    this.speed = clamp(this.speed + dt*6.5, this.baseSpeed, this.maxSpeed);
+    // reduce spawnRate as speed increases (more obstacles)
+    this.spawnRate = clamp(0.95 - (this.speed - this.baseSpeed)/1400, 0.35, 0.95);
+
+    // update score/distance: convert pixels traveled into meters.
+    // We'll say 1 meter = 6 pixels at baseSpeed. Score grows by speed * dt / pixelsPerMeter.
+    const pixelsPerMeter = 6;
+    this.distance += (this.speed * dt) / pixelsPerMeter;
+    this.distanceMeters = Math.floor(this.distance);
+
+    // move obstacles
+    for(const o of this.obstacles){
+      // obstacles move down the canvas at rate of speed (camera moving downhill)
+      o.y += this.speed * dt + (o.vx * dt * 30);
+      // slight sideways drift optional
+      o.x += o.vx * dt * 10;
+    }
+    // cleanup offscreen
+    this.obstacles = this.obstacles.filter(o => o.y < this.height + 120);
+
+    // spawn
+    this.spawnTimer -= dt;
+    if(this.spawnTimer <= 0){
+      this.spawnObstacle();
+      this.spawnTimer = this.spawnRate * (0.65 + Math.random()*0.9);
+    }
+
+    // player controls & physics
+    // apply directional input to desired velocity
+    const turnSpeed = 1200; // pixels per second^2
+    // ax: accelerate towards direction
+    const targetVX = this.player.dir * 320; // target lateral speed
+    // simple approach: lerp vx to target
+    this.player.vx += (targetVX - this.player.vx) * clamp(dt*6.0, 0, 1);
+    this.player.x += this.player.vx * dt;
+
+    // clamp to boundaries
+    const margin = 28;
+    this.player.x = clamp(this.player.x, margin, this.width - margin);
+
+    // collision detection (AABB-ish)
+    for(const o of this.obstacles){
+      const pw = this.player.w, ph = this.player.h;
+      const px = this.player.x - pw/2, py = this.player.y - ph/2;
+      const ox = o.x - o.w/2, oy = o.y - o.h/2;
+      if(px < ox + o.w && px + pw > ox && py < oy + o.h && py + ph > oy){
+        // collision!
+        this.end();
+        return;
+      }
+    }
+
+    // background offset for parallax snow lines
+    this.backgroundOffset += (this.speed * dt * 0.15);
+  }
+
+  drawBackground(){
+    // draw simple slope stripes to suggest movement
+    const w = this.width, h = this.height;
+    ctx.save();
+    // white snow base
+    ctx.fillStyle = '#f6fbff';
+    ctx.fillRect(0,0,w,h);
+    // draw faint diagonal lines as snow streaks (parallax)
+    ctx.strokeStyle = 'rgba(6,36,60,0.045)';
+    ctx.lineWidth = 1;
+    const spacing = 80;
+    const offset = (this.backgroundOffset % spacing);
+    for(let x = -spacing*2; x < w + spacing*2; x += spacing){
+      ctx.beginPath();
+      ctx.moveTo(x + offset, -40);
+      ctx.lineTo(x - 220 + offset, h + 40);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  drawPlayer(){
+    const p = this.player;
+    // draw simple skier: triangle body + head circle + skis
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    // skis
+    ctx.fillStyle = '#332b2b';
+    ctx.fillRect(-18, p.h/2 - 8, 40, 6);
+    ctx.fillRect(-18, p.h/2 - 2, 40, 6);
+
+    // body (rotated slightly based on vx)
+    const tilt = clamp(p.vx / 420, -0.45, 0.45);
+    ctx.rotate(tilt * 0.25);
+    ctx.fillStyle = '#0b2340';
+    roundRect(ctx, -p.w/2, -p.h/2, p.w, p.h, 6, true, false);
+    // head
+    ctx.beginPath();
+    ctx.fillStyle = '#ffd9b3';
+    ctx.arc(0, -p.h/2 - 8, 8, 0, Math.PI*2);
+    ctx.fill();
+
+    // goggles
+    ctx.fillStyle = '#1ea1ff';
+    ctx.fillRect(-9, -p.h/2 - 12, 18, 6);
+
+    ctx.restore();
+  }
+
+  drawObstacle(o){
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    if(o.type === 'tree'){
+      // trunk
+      ctx.fillStyle = '#5b3415';
+      roundRect(ctx, -o.w*0.08, o.h*0.18, o.w*0.16, o.h*0.4, 2, true, false);
+      // pine layers
+      ctx.fillStyle = '#0a6a12';
+      ctx.beginPath();
+      ctx.moveTo(0, -o.h*0.4);
+      ctx.lineTo(-o.w*0.55, o.h*0.2);
+      ctx.lineTo(o.w*0.55, o.h*0.2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(0, -o.h*0.07);
+      ctx.lineTo(-o.w*0.45, o.h*0.45);
+      ctx.lineTo(o.w*0.45, o.h*0.45);
+      ctx.closePath();
+      ctx.fill();
+    } else if(o.type === 'rock'){
+      ctx.fillStyle = '#666';
+      roundRect(ctx, -o.w/2, -o.h/2, o.w, o.h, o.w*0.19, true, false);
+      // highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath();
+      ctx.ellipse(-o.w*0.15, -o.h*0.15, o.w*0.18, o.h*0.12, 0, 0, Math.PI*2);
+      ctx.fill();
+    } else if(o.type === 'snowman'){
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(0, o.h*0.05, o.h*0.45, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, -o.h*0.25, o.h*0.28, 0, Math.PI*2);
+      ctx.fill();
+      // eyes
+      ctx.fillStyle = '#222';
+      ctx.beginPath(); ctx.arc(-5, -o.h*0.28, 2.2,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(5, -o.h*0.28, 2.2,0,Math.PI*2); ctx.fill();
+    } else if(o.type === 'flag'){
+      ctx.fillStyle = '#7a002b';
+      ctx.fillRect(-2, -o.h/2, 4, o.h);
+      ctx.fillStyle = '#ff3bd6';
+      ctx.beginPath();
+      ctx.moveTo(0, -o.h/2 + 6);
+      ctx.lineTo(o.w*0.8, -o.h/2 + o.h*0.12);
+      ctx.lineTo(0, -o.h/2 + o.h*0.28);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  draw(){
+    // clear
+    ctx.clearRect(0,0,this.width,this.height);
+
+    this.drawBackground();
+
+    // draw obstacles
+    for(const o of this.obstacles){
+      this.drawObstacle(o);
+    }
+
+    // player on top
+    this.drawPlayer();
+
+    // optionally draw center line or slope boundaries
+    ctx.save();
+    ctx.strokeStyle = 'rgba(12,20,40,0.06)';
+    ctx.lineWidth = 2;
+    const left = 18, right = this.width-18;
+    roundRect(ctx, left-6, 12, right-left+12, this.height-24, 14, false, true);
+    ctx.restore();
+  }
+
+  frame(now){
+    if(!this.running) return;
+    const dt = Math.min(0.035, (now - this.lastTime)/1000);
+    this.lastTime = now;
+    this.update(dt);
+    this.draw();
+
+    // update HUD
+    scoreEl.textContent = Math.floor(this.distanceMeters);
+    speedEl.textContent = Math.floor(this.speed);
+
+    requestAnimationFrame(this.frame.bind(this));
+  }
+}
+
+// small helper: rounded rect
+function roundRect(ctx, x, y, w, h, r=6, fill=true, stroke=false){
+  const radius = r;
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+  if(fill) ctx.fill();
+  if(stroke) ctx.stroke();
+}
+
+// instantiate
+game = new Game();
+
+// Input handling
+const keys = {};
+window.addEventListener('keydown', e => {
+  if(e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { keys.left = true; e.preventDefault(); }
+  if(e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { keys.right = true; e.preventDefault(); }
+  // start on Enter/Space
+  if(!game.running && (e.key === 'Enter' || e.key === ' ')) game.start();
+});
+window.addEventListener('keyup', e => {
+  if(e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { keys.left = false; }
+  if(e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { keys.right = false; }
+});
+
+// apply directional flags to player each animation frame-ish
+function pollInput(){
+  if(!game || game.gameOver) { requestAnimationFrame(pollInput); return; }
+  // set dir
+  if(keys.left && !keys.right) game.player.dir = -1;
+  else if(keys.right && !keys.left) game.player.dir = 1;
+  else game.player.dir = 0;
+  requestAnimationFrame(pollInput);
+}
+pollInput();
+
+// Touch controls: tap left or right half
+canvas.addEventListener('touchstart', (ev) => {
+  ev.preventDefault();
+  if(ev.touches.length >= 1){
+    const t = ev.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    const cx = t.clientX - rect.left;
+    if(cx < rect.width/2) { keys.left = true; keys.right = false; }
+    else { keys.right = true; keys.left = false; }
+  }
+});
+canvas.addEventListener('touchend', (ev) => {
+  ev.preventDefault();
+  keys.left = false; keys.right = false;
+});
+canvas.addEventListener('touchcancel', (ev) => {
+  keys.left = false; keys.right = false;
+});
+
+// Mouse drag left-right (desktop)
+let mdown=false;
+canvas.addEventListener('mousedown', (e)=>{
+  mdown=true;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  if(cx < rect.width/2) { keys.left = true; keys.right = false; }
+  else { keys.right = true; keys.left = false; }
+});
+window.addEventListener('mouseup', ()=>{ mdown=false; keys.left=false; keys.right=false; });
+window.addEventListener('mousemove', (e)=>{
+  if(!mdown) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  if(cx < rect.width/2) { keys.left = true; keys.right = false; }
+  else { keys.right = true; keys.left = false; }
+});
+
+// buttons
+startBtn.addEventListener('click', ()=> { if(!game.running) game.start(); });
+muteBtn.addEventListener('click', ()=> { audioEnabled = !audioEnabled; muteBtn.textContent = audioEnabled ? 'Mute' : 'Unmute'; });
+resetHigh.addEventListener('click', ()=> { if(confirm('Reset high score?')){ setHigh(0); localStorage.removeItem(HIGH_KEY); highEl.textContent = 0; } });
+
+// initial draw (static)
+function initialDraw(){
+  game.drawBackground();
+  ctx.fillStyle = 'rgba(8,18,30,0.06)';
+  ctx.fillRect(0,0,canvas.clientWidth,canvas.clientHeight);
+  ctx.fillStyle = '#06304a';
+  ctx.font = '18px system-ui,Segoe UI,Roboto';
+  ctx.textAlign = 'center';
+  ctx.fillText('Press Start or Enter to play', canvas.clientWidth/2, canvas.clientHeight/2);
+}
+initialDraw();
+
+// pause when page hidden
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden && game && game.running){
+    // pause if needed
+    game.running = false;
+  }
+});
+
+// Accessibility: focus start on load
+startBtn.focus();
+
+</script>
+</body>
+</html>

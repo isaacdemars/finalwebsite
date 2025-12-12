@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Skeet Shooting Game</title>
+<style>
+    body {
+        background: #222;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        color: white;
+        font-family: Arial;
+        margin: 0;
+        padding: 20px;
+    }
+    h1 {
+        margin-bottom: 10px;
+    }
+    canvas {
+        background: #87CEEB;
+        border: 3px solid white;
+        border-radius: 10px;
+        cursor: none; /* Hide default cursor */
+    }
+    #score {
+        margin-top: 15px;
+        font-size: 1.2rem;
+    }
+</style>
+</head>
+<body>
+    <h1>Skeet Shooting Game</h1>
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+    <div id="score">Score: 0</div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+let score = 0;
+let skeets = [];
+let explosions = [];
+let mouseX = 0;
+let mouseY = 0;
+
+function spawnSkeet() {
+    const y = Math.random() * (canvas.height - 100) + 50;
+    skeets.push({ x: -50, y: y, radius: 20, speed: Math.random() * 3 + 3 });
+}
+
+function createExplosion(x, y) {
+    explosions.push({ x, y, radius: 5, maxRadius: 35, alpha: 1 });
+}
+
+function update() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw and move skeets
+    for (let i = 0; i < skeets.length; i++) {
+        let s = skeets[i];
+        s.x += s.speed;
+
+        if (s.x - s.radius > canvas.width) {
+            skeets.splice(i, 1);
+            i--;
+            continue;
+        }
+
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "orange";
+        ctx.fill();
+        ctx.strokeStyle = "black";
+        ctx.stroke();
+    }
+
+    // Draw explosions
+    for (let i = 0; i < explosions.length; i++) {
+        let e = explosions[i];
+        e.radius += 2;
+        e.alpha -= 0.05;
+
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 0, 0, ${e.alpha})`;
+        ctx.fill();
+
+        if (e.radius >= e.maxRadius || e.alpha <= 0) {
+            explosions.splice(i, 1);
+            i--;
+        }
+    }
+
+    // Draw crosshair
+    ctx.strokeStyle = "black";
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(mouseX - 10, mouseY);
+    ctx.lineTo(mouseX + 10, mouseY);
+    ctx.moveTo(mouseX, mouseY - 10);
+    ctx.lineTo(mouseX, mouseY + 10);
+    ctx.stroke();
+
+    requestAnimationFrame(update);
+}
+
+canvas.addEventListener("mousemove", function(e) {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+});
+
+canvas.addEventListener("click", function (e) {
+    for (let i = 0; i < skeets.length; i++) {
+        let s = skeets[i];
+        const dist = Math.hypot(mouseX - s.x, mouseY - s.y);
+        if (dist < s.radius) {
+            createExplosion(s.x, s.y);
+            skeets.splice(i, 1);
+            score++;
+            document.getElementById("score").innerText = "Score: " + score;
+            break;
+        }
+    }
+});
+
+setInterval(spawnSkeet, 1500);
+update();
+</script>
+</body>
+</html>
